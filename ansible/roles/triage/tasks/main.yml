@@ -1,0 +1,23 @@
+---
+# Ship triage.sh to each host in the inventory, run it, fetch the JSON back.
+# This is the OPTIONAL fleet path: for one VM, just run triage.sh directly.
+- name: Copy triage.sh
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../triage.sh"
+    dest: /tmp/triage.sh
+    mode: "0755"
+
+- name: Run triage (JSON)
+  ansible.builtin.command: "/tmp/triage.sh --window {{ triage_window | default(20) }} --json"
+  register: triage_out
+  changed_when: false
+
+- name: Save report locally
+  ansible.builtin.copy:
+    content: "{{ triage_out.stdout }}\n"
+    dest: "{{ triage_report_dir | default('./reports') }}/{{ inventory_hostname }}.json"
+  delegate_to: localhost
+
+- name: Show verdict
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ (triage_out.stdout | from_json).verdict }}"

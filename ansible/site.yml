@@ -1,0 +1,11 @@
+---
+# Run the guest triage across a fleet and collect one JSON report per host.
+#   ansible-playbook -i inventory.ini ansible/site.yml
+# inventory.ini example:
+#   [vms]
+#   web01 ansible_host=10.0.0.11
+#   web02 ansible_host=10.0.0.12
+- hosts: vms
+  gather_facts: false
+  roles:
+    - triage
