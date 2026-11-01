@@ -111,6 +111,18 @@ and `numastat -p <qemu-pid>` + vCPU/memory pinning (remote memory).
 
 ---
 
+## One-shot VM facts (prove the two VMs are identical)
+
+`vm-facts.sh` prints a labeled inventory — CPU model/count, RAM, NUMA, disk,
+kernel, network, and OpenStack placement — in the same format on every VM, so two
+of them screenshot cleanly side by side:
+
+```bash
+./vm-facts.sh
+```
+
+For a richer single-command hardware dump, `inxi -Fxxxz` (apt install inxi) is great too.
+
 ## Reproduce the whole lab yourself
 
 On a KVM/QEMU host **you own**, with two identical guests:
