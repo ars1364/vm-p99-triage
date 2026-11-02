@@ -43,23 +43,40 @@ awk '/^cpu /{print "steal_ticks="$9}' /proc/stat
 
 ## 2. cgroup CPU throttling — you hit your own quota
 
-This is the throttling the guest can see: a `cpu.max` quota on a cgroup inside
-the VM (how Docker `--cpus`, k8s CPU limits and systemd `CPUQuota` work).
+This is the throttling the guest *can* see directly: a `cpu.max` quota on a
+cgroup inside the VM (exactly how Docker `--cpus`, k8s CPU limits and systemd
+`CPUQuota` enforce a cap). Unlike steal, this is self-inflicted — it reproduces
+on ANY VM regardless of which host it lands on.
+
+**Timing trap:** a `--scope` unit's cgroup only exists *while the job runs*;
+systemd deletes it the instant the command exits. So read `cpu.stat` DURING the
+window, not after. Give the burn a long timeout and sample twice:
 
 ```
-# run a capped CPU burn (2.0 CPUs) and watch its cgroup
-sudo systemd-run --unit=demo --scope -p CPUQuota=200% stress-ng --cpu "$(nproc)" --timeout 30s &
-cat /sys/fs/cgroup/system.slice/demo.scope/cpu.max       # e.g. "200000 100000"  = 2 CPUs / 100ms
-cat /sys/fs/cgroup/system.slice/demo.scope/cpu.stat      # nr_throttled / throttled_usec climb
+# start a 60s burn capped at HALF a core, then sample the counters while it runs
+sudo systemctl stop demo.scope 2>/dev/null; sudo systemctl reset-failed demo.scope 2>/dev/null
+sudo systemd-run --unit=demo --scope -p CPUQuota=50% stress-ng --cpu 2 --timeout 60s &
+sleep 2
+cat /sys/fs/cgroup/system.slice/demo.scope/cpu.max       # "50000 100000" = 0.5 CPU / 100ms
+grep -E 'nr_throttled|throttled_usec' /sys/fs/cgroup/system.slice/demo.scope/cpu.stat   # BEFORE
+mpstat 1 10 | awk '/Average:/{print "%steal="$(NF-3)}'                                   # host?
+grep -E 'nr_throttled|throttled_usec' /sys/fs/cgroup/system.slice/demo.scope/cpu.stat   # AFTER
+sudo systemctl stop demo.scope                                                           # cleanup
 ```
 
-- **VM A:** same burn uncapped -> `nr_throttled` stays 0.
-- **VM B:** `nr_throttled` and `throttled_usec` climb every period, while
-  `%steal` stays ~0. You are being stopped at your quota before the 100ms period
-  ends. Distinguishes cleanly from steal: **throttle -> nr_throttled up, steal ~0;
-  steal -> steal up, nr_throttled 0.**
+Validated A/B result:
 
-For an already-running service, point at its real cgroup:
+- **VM A (uncapped):** same burn with no quota -> `nr_throttled` stays 0.
+- **VM B (capped, or any VM with the cap above):** in a 10s window,
+  `nr_throttled` climbs ~**+101** (18 -> 119) and `throttled_usec` ~**+15.1s**
+  (2.69 -> 17.83s) while **`%steal` stays 0.00**. You are stopped at your own
+  quota before the 100ms period ends — the CPU is idle, you just aren't allowed
+  to use it.
+
+The clean discriminator from steal:
+**throttle -> `nr_throttled` up, `%steal` ~0; steal -> `%steal` up, `nr_throttled` 0.**
+
+For an already-running service, point at its real cgroup instead of a demo unit:
 ```
 cat /sys/fs/cgroup/$(awk -F: '/^0::/{print $3}' /proc/$(pgrep -n yourapp)/cgroup)/cpu.stat
 ```
