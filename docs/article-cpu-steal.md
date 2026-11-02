@@ -131,7 +131,7 @@ stress-ng --cpu 4 --timeout 60s &
 ```
 vmstat 1 5
 ```
-> 📸 **[Screenshot A-1: `vmstat` on VM A]**
+![VM A — vmstat: the st column stays at 0](images/vm-a-vmstat.png)
 
 *Guide:* look at the **last column, `st`** — it stays at **0**. `us` (user) is
 high and `id` (idle) ~0: VM A gets every cycle it asks for. Nothing stands
@@ -141,7 +141,7 @@ between it and the hardware.
 ```
 mpstat -P ALL 1 5
 ```
-> 📸 **[Screenshot A-2: `mpstat` on VM A]**
+![VM A — mpstat: %steal ~0, %usr ~99](images/vm-a-mpstat.png)
 
 *Guide:* the **`%steal`** column is ~0 and **`%usr`** is ~99. Healthy — the VM
 owns its cores.
@@ -159,7 +159,7 @@ stress-ng --cpu 4 --timeout 60s &
 ```
 vmstat 1 5
 ```
-> 📸 **[Screenshot B-1: `vmstat` on VM B]**
+![VM B — vmstat: the st column reads ~75](images/vm-b-vmstat.png)
 
 *Guide:* now **`st` reads ~75**. VM B is just as eager to use CPU, but
 three-quarters of the time it's parked waiting for a physical core the host can't
@@ -169,7 +169,7 @@ give it. `id` (idle) is still ~0 — it isn't idle, it's **blocked**.
 ```
 mpstat -P ALL 1 5
 ```
-> 📸 **[Screenshot B-2: `mpstat` on VM B]**
+![VM B — mpstat: %steal ~75, %usr ~25](images/vm-b-mpstat.png)
 
 *Guide:* **`%steal` ≈ 75**, **`%usr` ≈ 25**. The VM only gets to actually compute
 a quarter of the time; the other three-quarters are stolen by the host.

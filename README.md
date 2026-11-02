@@ -58,6 +58,41 @@ real bottleneck.
 
 ---
 
+## See it live: CPU steal on two identical VMs
+
+Same 4-vCPU spec, same `stress-ng --cpu 4` load, same commands — `vm-a` is on a
+healthy host, `vm-b` on an oversubscribed one. The only difference is the host
+underneath.
+
+**VM A (healthy) — `vmstat 1 5`** — the `st` (steal) column is **`0`**; `us` is 99:
+
+![vm-a vmstat: st column is 0](docs/images/vm-a-vmstat.png)
+
+**VM A (healthy) — `mpstat -P ALL 1 5`** — `%steal` ≈ 0, `%usr` ≈ 99.75:
+
+![vm-a mpstat: %steal ~0](docs/images/vm-a-mpstat.png)
+
+**VM B (victim) — `vmstat 1 5`** — the `st` column jumps to **`75`** (runnable but not scheduled; `id` still 0 — blocked, not idle):
+
+![vm-b vmstat: st column is 75](docs/images/vm-b-vmstat.png)
+
+**VM B (victim) — `mpstat -P ALL 1 5`** — `%steal` ≈ 75, `%usr` ≈ 25 (it computes only a quarter of the time):
+
+![vm-b mpstat: %steal ~75](docs/images/vm-b-mpstat.png)
+
+| metric | VM A (healthy) | VM B (victim) |
+|---|---|---|
+| `vmstat` → `st`     | 0   | ~75 |
+| `mpstat` → `%steal` | ~0  | ~75 |
+| `mpstat` → `%usr`   | ~99 | ~25 |
+
+Identical spec, identical command — one runs at full speed, the other spends 75%
+of its life waiting for a CPU it was promised. Nothing in VM B's OS or your code
+is wrong; the bottleneck is one layer down, on the host. Full write-up:
+[docs/article-cpu-steal.md](docs/article-cpu-steal.md).
+
+---
+
 ## It's validated — here's it catching all three (real runs)
 
 Two 4-vCPU / 4 GB VMs (`vm-a` = control, `vm-b` = victim) on the same host,
