@@ -41,6 +41,40 @@ Raw source of the number (no tools): field 9 of `/proc/stat`:
 awk '/^cpu /{print "steal_ticks="$9}' /proc/stat
 ```
 
+### Simulate it (lab only — needs root on a KVM/QEMU host YOU own)
+
+There are two ways to make a guest show `%steal`. Pick by blast radius.
+
+**Method A — surgical (affects only the target VM).** Pin *all* of one guest's
+vCPUs onto a *single* physical CPU ("self-oversubscribe"): the VM believes it has
+N cores but the host only ever gives it one, so under load it is runnable but not
+scheduled → real `%steal` inside that guest, with almost no impact on neighbours
+(it ties up one pCPU; the host steers other guests onto the free cores). This is
+the method to use on a shared host.
+```
+# on the host, via libvirt (instance-00000d15 = the guest's domain; 23 = one pCPU)
+for v in 0 1 2 3; do sudo docker exec nova_libvirt virsh vcpupin instance-00000d15 $v 23 --live; done
+# then INSIDE the guest, create demand so the squeeze shows:
+stress-ng --cpu 4 --timeout 60s      # -> ~75% %steal in vmstat/mpstat
+# undo (back to all host CPUs):
+for v in 0 1 2 3; do sudo docker exec nova_libvirt virsh vcpupin instance-00000d15 $v 0-47 --live; done
+```
+(No containerised libvirt? Use `virsh` directly: `virsh vcpupin <domain> <vcpu> <pcpu> --live`.)
+
+**Method B — real noisy neighbour (affects EVERY VM on the host).** Oversubscribe
+the host's physical cores outright, so the hypervisor physically cannot service
+everyone and *all* co-located guests see `%steal` rise together.
+```
+# on the HOST itself — load > core count:
+stress-ng --cpu "$(nproc)" --cpu-load 100 --timeout 60s
+# (equivalently: start enough greedy VMs that total vCPUs >> host pCPUs)
+```
+> ⚠️ Method B degrades every tenant on the box — only do it on a **dedicated,
+> throwaway host**. For a controlled article demo prefer Method A: it produces
+> textbook steal on exactly one VM with no collateral damage.
+
+Both are wired into `scripts/inject-fault.sh` (`steal` = Method A, `hostload` = Method B).
+
 ## 2. cgroup CPU throttling — you hit your own quota
 
 This is the throttling the guest *can* see directly: a `cpu.max` quota on a

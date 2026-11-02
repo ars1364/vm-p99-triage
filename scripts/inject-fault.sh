@@ -3,12 +3,16 @@
 # three environment faults on ONE guest, so you can watch them from inside that
 # guest with ordinary Linux tools (vmstat/mpstat, cpu.stat, numactl/sysbench).
 #
-#   usage: sudo ./inject-fault.sh <steal|numa|providercap|clear|show> <libvirt-domain>
+#   usage: sudo ./inject-fault.sh <steal|hostload|numa|providercap|clear|show> <libvirt-domain>
 #
 # steal       Pin ALL the guest's vCPUs onto ONE physical CPU (self-oversubscribe).
 #             Under load the guest wants N CPUs but gets 1 -> real %steal INSIDE the
 #             guest, with almost no impact on neighbour VMs (it only ties up 1 pCPU;
 #             the host scheduler steers other guests onto the free cores).
+#             This is the SAFE method for a shared host (one VM affected).
+# hostload    Oversubscribe ALL host pCPUs with stress-ng (real noisy neighbour) ->
+#             EVERY co-located guest shows %steal. WARNING: degrades all tenants;
+#             dedicated/throwaway hosts ONLY. Self-stops after HOSTLOAD_SECS (60).
 # numa        Pin vCPUs to node1 while forcing memory onto node0 -> every memory
 #             access crosses the interconnect. Restart the guest workload afterwards
 #             so its pages actually (re)allocate on the remote node.
@@ -44,13 +48,22 @@ case "${1:-}" in
   providercap)
     $V schedinfo "$DOM" --live --set global_period=100000 --set global_quota=100000 >/dev/null
     echo "PROVIDERCAP: $DOM host-capped to 1.0 CPU. NOTE: inside the guest this reads as %steal, not throttling." ;;
+  hostload)
+    # Method B: overload the WHOLE host so EVERY co-located guest shows %steal.
+    # WARNING: degrades all tenants on this host. Dedicated/throwaway hosts only.
+    DUR=${HOSTLOAD_SECS:-60}
+    command -v stress-ng >/dev/null 2>&1 || { echo "stress-ng not installed on host"; exit 3; }
+    echo "HOSTLOAD: oversubscribing all $(nproc) host pCPUs for ${DUR}s (noisy neighbour). Every VM on this host will show %steal."
+    stress-ng --cpu "$(nproc)" --cpu-load 100 --timeout "${DUR}s" >/dev/null 2>&1 &
+    echo "  host stressor pid $! (self-stops after ${DUR}s; or: pkill -f 'stress-ng --cpu')"
+    exit 0 ;;
   clear)
     $V schedinfo "$DOM" --live --set global_quota=$UNLIM >/dev/null 2>&1
     for vc in $(vcpus); do $V vcpupin "$DOM" "$vc" 0-47 --live >/dev/null; done
     $V numatune "$DOM" --nodeset 0-1 --mode strict --live >/dev/null 2>&1
     echo "CLEARED $DOM (vCPUs unpinned, cap removed, memory both nodes)." ;;
   show) ;;
-  *) echo "usage: sudo $0 <steal|numa|providercap|clear|show> <domain>"; exit 2 ;;
+  *) echo "usage: sudo $0 <steal|hostload|numa|providercap|clear|show> <domain>"; exit 2 ;;
 esac
 echo "  global_quota: $($V schedinfo "$DOM" 2>/dev/null | awk -F: '/global_quota/{print $2}')"
 echo "  vcpupin:"; $V vcpupin "$DOM" 2>/dev/null | sed 's/^/    /'
