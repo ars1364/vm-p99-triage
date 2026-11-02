@@ -81,35 +81,82 @@ For an already-running service, point at its real cgroup instead of a demo unit:
 cat /sys/fs/cgroup/$(awk -F: '/^0::/{print $3}' /proc/$(pgrep -n yourapp)/cgroup)/cpu.stat
 ```
 
-## 3. NUMA — your memory is on a remote node
+## 3. NUMA — memory on a remote node  *(this one is for the infra owner, not the VM user)*
 
-A single-vNUMA guest can't show `numa_miss` (it thinks everything is local), so
-the honest guest-side evidence is a **memory-latency/bandwidth probe** compared
-against the identical healthy VM:
+Unlike steal and throttling, **a VM user usually cannot prove NUMA from inside the
+guest.** A single-vNUMA flavor reports `available: 1 nodes` no matter where its
+RAM physically sits, there is no guest-readable counter, and the bandwidth hit
+(~15-25%) hides inside normal shared-host noise. The most a tenant can do is:
 
 ```
-numactl -H                                  # topology the guest sees
-sysbench memory --memory-block-size=256M --memory-total-size=20G --memory-oper=read --memory-access-mode=rnd run
+numactl -H                     # 1 node? then you are blind to placement
+# infer from YOUR app's tail latency on memory-heavy work (remote compounds per-access),
+# then ASK YOUR PROVIDER to check the host, or pick a NUMA-pinned instance type.
 ```
 
-> Use a block size **larger than your L3 cache** (here 256 MiB). With a tiny
-> buffer sysbench measures cache bandwidth and NUMA is invisible.
+> **Verdict (guest side):** NUMA is the sneakiest of the three. Steal has
+> `%steal`, throttling has `nr_throttled` — both readable in the VM. NUMA on a
+> single-vNUMA guest has **no counter and only a weak, deniable bandwidth
+> signal**. The reliable in-guest tell is the *app's own P99/P999*, not a metric.
+> **The real diagnosis and the fix live on the host — so the rest of this section
+> is for the cloud/OpenStack operator.**
 
-- **VM A (local memory):** e.g. seq ~6650 MiB/s, rnd ~193 MiB/s.
-- **VM B (remote memory):** e.g. seq ~5380 MiB/s, rnd ~169 MiB/s — ~20% lower
-  bandwidth for the *same* VM spec, because every access crosses the CPU
-  interconnect (QPI/UPI). The bandwidth hit is modest; the real damage is on a
-  memory-bound app's **tail latency**, where remote memory can push P99/P999
-  several times higher (measure with your own workload, not just sysbench).
+### Host-side detection (operator / OpenStack engineer)
 
-If the flavor exposes >=2 vNUMA nodes, you also get it directly:
 ```
-numastat                                    # numa_miss / numa_foreign > 0
-numastat -p $(pgrep -n yourapp)             # per-process page placement
+numactl -H                                   # node count, per-node CPUs/size, distances
+                                             #   distances 10 (local) vs 21 (remote) = ~2.1x cost
+# For a specific guest, find its QEMU pid and see where its RAM actually is:
+PID=$(cat /var/run/libvirt/qemu/<instance-xxxx>.pid)      # or: pgrep -f guest=<instance-xxxx>
+numastat -p "$PID"                           # MB per node for that VM  <-- the smoking gun
+virsh vcpupin  <instance-xxxx>               # which pCPUs the vCPUs are on
+virsh numatune <instance-xxxx>               # memory nodeset + mode
 ```
 
-On the host (for the write-up, not something a customer can run) the proof is
-`numastat -p <qemu-pid>` showing the VM's pages sitting on the remote node.
+If `numastat -p` shows the VM's pages on node 0 while `vcpupin` has its vCPUs on
+node 1's CPUs, every memory access is crossing the interconnect. That is the
+unambiguous proof the guest can never see.
+
+### Real numbers (measured on a live 2-socket compute host, load ~7)
+
+```
+                           seq bandwidth     random (latency-bound)
+LOCAL   (cpu0 -> mem0)       6508 MiB/s         257 MiB/s
+REMOTE  (cpu0 -> mem1)       5319 MiB/s  -18%   190 MiB/s  -26%
+REMOTE, node1 bus saturated  3834 MiB/s  -41%   129 MiB/s  -50%   <-- worst case
+LOCAL while node1 saturated  6854 MiB/s   ~0            -        <-- a LOCAL VM is immune
+```
+
+Two lessons: (1) the latency-bound (random) penalty is bigger than the streaming
+one, which is why memory-bound **app tail latency** suffers most; (2) a
+remote-memory VM is hostage to the *other* node's contention — up to ~2x slower —
+while a correctly-placed (local) VM on the same host sails through untouched.
+
+### The fix (OpenStack / libvirt)
+
+The goal is **co-location**: a VM's vCPUs and its RAM on the same node, and a VM
+that fits in one node should never be split across two.
+
+- **Flavor:** pin topology and CPUs so the scheduler keeps the guest on one node:
+  ```
+  openstack flavor set <flavor>     --property hw:numa_nodes=1     --property hw:cpu_policy=dedicated     --property hw:cpu_thread_policy=prefer
+  ```
+  (A large guest that must span sockets: set `hw:numa_nodes=2` so the guest gets
+  a *correct* 2-node topology it can optimize for, rather than a silent split.)
+- **Scheduler:** enable `NUMATopologyFilter` in `nova.conf`
+  (`[filter_scheduler] enabled_filters`) so placement honours the topology.
+- **Host:** reserve memory per node (`reserved_huge_pages` / `reserved_host_memory_mb`)
+  and prefer **hugepages** (`hw:mem_page_size=large`) — hugepages are allocated
+  per-node and make placement explicit. Avoid overcommit on pinned hosts
+  (`cpu_allocation_ratio=1.0` for the pinned aggregate).
+- **Live, already-running guest (triage only):** `virsh numatune <dom> --mode
+  restrictive --nodeset <n> --live` nudges future allocations; a clean fix needs
+  a cold migrate/resize onto a correctly-pinned flavor so the pages re-home.
+
+> **Verdict (host side):** NUMA misplacement is invisible to the tenant and
+> costs 15-50% of memory performance, worst on a busy host. It is 100% the
+> operator's to prevent — via flavor topology + CPU pinning + NUMATopologyFilter
+> — and the VM user's only recourse is to pick a NUMA-aware instance type or ask.
 
 ---
 
