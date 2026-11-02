@@ -5,7 +5,7 @@
 # in cpu.stat (nr_throttled). Contrast with %steal, which stays ~0 here.
 #
 #   usage: sudo ./guest-throttle-demo.sh [quota_pct] [seconds]
-#   e.g.   sudo ./guest-throttle-demo.sh 200 30     # cap at 0.5 CPU for 30s
+#   e.g.   sudo ./guest-throttle-demo.sh 50 30      # cap at 0.5 CPU for 30s
 set -u
 PCT=${1:-50}; SECS=${2:-30}; N=$(nproc)
 echo "Capping a $N-thread CPU burn to CPUQuota=${PCT}% for ${SECS}s (host idle-safe; only limits this unit)."
