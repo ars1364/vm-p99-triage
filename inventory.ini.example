@@ -1,0 +1,10 @@
+# Copy to inventory.ini and edit — one line per VM you want to triage.
+#   cp inventory.ini.example inventory.ini
+[vms]
+web01 ansible_host=10.0.0.11 ansible_user=ubuntu
+web02 ansible_host=10.0.0.12 ansible_user=ubuntu
+
+# Optional overrides:
+# [vms:vars]
+# triage_window=20
+# triage_report_dir=./reports

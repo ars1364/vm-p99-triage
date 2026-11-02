@@ -192,6 +192,7 @@ For checking many VMs at once. **For a single VM, don't bother — just run
 report per host:
 
 ```bash
+cp inventory.ini.example inventory.ini   # then edit with your hosts
 ansible-playbook -i inventory.ini ansible/site.yml
 ```
 

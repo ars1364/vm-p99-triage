@@ -2,3 +2,4 @@
 /loadgen
 results/
 *.log
+inventory.ini
