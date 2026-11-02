@@ -112,6 +112,83 @@ stress-ng --cpu "$(nproc)" --cpu-load 100 --timeout 60s
 > throwaway host**. For an article/demo, prefer Method A — it produces textbook
 > steal on exactly one VM with zero collateral damage.
 
+## Seeing it live: two identical VMs, side by side
+
+Nothing makes steal click like watching two identical VMs react to the *same*
+command. **VM A** sits on a healthy host. **VM B** sits on an oversubscribed one
+(in the lab we forced this by pinning all of B's vCPUs onto a single physical
+core — the same effect a noisy neighbour has). Both are 4-vCPU VMs. We run the
+same three steps on each.
+
+### VM A — the healthy baseline
+
+**Step 1 — put load on all 4 vCPUs:**
+```
+stress-ng --cpu 4 --timeout 60s &
+```
+
+**Step 2 — watch steal with vmstat:**
+```
+vmstat 1 5
+```
+> 📸 **[Screenshot A-1: `vmstat` on VM A]**
+
+*Guide:* look at the **last column, `st`** — it stays at **0**. `us` (user) is
+high and `id` (idle) ~0: VM A gets every cycle it asks for. Nothing stands
+between it and the hardware.
+
+**Step 3 — confirm with mpstat:**
+```
+mpstat -P ALL 1 5
+```
+> 📸 **[Screenshot A-2: `mpstat` on VM A]**
+
+*Guide:* the **`%steal`** column is ~0 and **`%usr`** is ~99. Healthy — the VM
+owns its cores.
+
+### VM B — the victim
+
+Same VM spec, same commands.
+
+**Step 1 — same load:**
+```
+stress-ng --cpu 4 --timeout 60s &
+```
+
+**Step 2 — vmstat:**
+```
+vmstat 1 5
+```
+> 📸 **[Screenshot B-1: `vmstat` on VM B]**
+
+*Guide:* now **`st` reads ~75**. VM B is just as eager to use CPU, but
+three-quarters of the time it's parked waiting for a physical core the host can't
+give it. `id` (idle) is still ~0 — it isn't idle, it's **blocked**.
+
+**Step 3 — mpstat:**
+```
+mpstat -P ALL 1 5
+```
+> 📸 **[Screenshot B-2: `mpstat` on VM B]**
+
+*Guide:* **`%steal` ≈ 75**, **`%usr` ≈ 25**. The VM only gets to actually compute
+a quarter of the time; the other three-quarters are stolen by the host.
+
+### The punchline
+
+Put the four shots side by side:
+
+| metric | VM A (healthy) | VM B (victim) |
+|---|---|---|
+| `vmstat` → `st`      | 0    | ~75 |
+| `mpstat` → `%steal`  | ~0   | ~75 |
+| `mpstat` → `%usr`    | ~99  | ~25 |
+
+Same spec, same command, same load. One runs at full speed; the other spends 75%
+of its life waiting for a CPU it was promised. **Nothing inside VM B's OS or your
+code is wrong — the bottleneck is one layer below, on the host.** That is CPU
+steal, and you just proved it in two commands.
+
 ## What to do about it (if you're the tenant)
 
 You cannot fix host overcommit from inside the guest. But you can act on the
